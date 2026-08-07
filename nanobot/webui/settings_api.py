@@ -1030,7 +1030,10 @@ def _image_generation_provider_rows(config: Config) -> list[dict[str, Any]]:
         configured = (
             _provider_configured_for_settings(spec, provider_config)
             if spec is not None and provider_config is not None
-            else bool(getattr(provider_config, "api_key", None))
+            else bool(
+                getattr(provider_config, "api_key", None)
+                or getattr(provider_config, "api_base", None)
+            )
         )
         rows.append(
             {

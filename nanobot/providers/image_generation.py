@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import re
+import secrets
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,42 @@ _OLLAMA_SIZE_PRESETS = {
 }
 _OLLAMA_EXPLICIT_SIZE_RE = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
 _OLLAMA_ASPECT_RATIO_RE = re.compile(r"^\s*(\d+)\s*:\s*(\d+)\s*$")
+_COMFY_POLL_INTERVAL_S = 0.25
+_COMFY_DEFAULT_WORKFLOW: dict[str, Any] = {
+    "3": {
+        "class_type": "KSampler",
+        "inputs": {
+            "seed": "%seed%",
+            "steps": 20,
+            "cfg": 7.0,
+            "sampler_name": "euler",
+            "scheduler": "normal",
+            "denoise": 1.0,
+            "model": ["4", 0],
+            "positive": ["6", 0],
+            "negative": ["7", 0],
+            "latent_image": ["5", 0],
+        },
+    },
+    "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "%model%"}},
+    "5": {
+        "class_type": "EmptyLatentImage",
+        "inputs": {"width": "%width%", "height": "%height%", "batch_size": 1},
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": "%prompt%", "clip": ["4", 1]},
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": "%negative_prompt%", "clip": ["4", 1]},
+    },
+    "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+    "9": {
+        "class_type": "SaveImage",
+        "inputs": {"filename_prefix": "nanobot", "images": ["8", 0]},
+    },
+}
 
 
 class ImageGenerationError(RuntimeError):
@@ -616,6 +653,225 @@ def _ollama_images_from_payload(payload: dict[str, Any]) -> list[str]:
     collect(payload.get("image"))
     collect(payload.get("images"))
     return images
+
+
+def _basic_auth_header(value: str | None) -> dict[str, str]:
+    """Interpret a local image provider key as ``username:password`` basic auth."""
+    if not value:
+        return {}
+    encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {encoded}"}
+
+
+class Automatic1111ImageGenerationClient(ImageGenerationProvider):
+    """Client for AUTOMATIC1111, Forge, and SD.Next ``sdapi`` endpoints."""
+
+    provider_name = "automatic1111"
+    model_options = ("default",)
+    default_timeout = 300.0
+
+    def _default_base_url(self) -> str:
+        return "http://127.0.0.1:7860"
+
+    def _resolve_base_url(self, api_base: str | None) -> str:
+        base = (api_base or self._default_base_url()).rstrip("/")
+        return base.removesuffix("/sdapi/v1")
+
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        reference_images: list[str] | None = None,
+        aspect_ratio: str | None = None,
+        image_size: str | None = None,
+    ) -> GeneratedImageResponse:
+        width, height = _ollama_dimensions(aspect_ratio, image_size)
+        references = list(reference_images or [])
+        body: dict[str, Any] = {
+            "prompt": prompt,
+            "width": width,
+            "height": height,
+            "batch_size": 1,
+            "n_iter": 1,
+        }
+        if model and model.lower() != "default":
+            body["override_settings"] = {"sd_model_checkpoint": model}
+        if references:
+            body["init_images"] = [image_path_to_data_url(path) for path in references]
+        body.update(self.extra_body)
+
+        endpoint = "img2img" if references else "txt2img"
+        response = await self._http_post(
+            f"{self.api_base}/sdapi/v1/{endpoint}",
+            headers={
+                "Content-Type": "application/json",
+                **_basic_auth_header(self.api_key),
+                **self.extra_headers,
+            },
+            body=body,
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ImageGenerationError(
+                f"AUTOMATIC1111 image generation failed: {_http_error_detail(response)}"
+            ) from exc
+
+        data = _as_json_object(response.json()) or {}
+        raw_images = data.get("images")
+        images = [
+            _ollama_image_data_url(value)
+            for value in (cast(list[object], raw_images) if isinstance(raw_images, list) else [])
+            if isinstance(value, str) and value
+        ]
+        self._require_images(images, data)
+        return GeneratedImageResponse(images=images, content="", raw=data)
+
+
+def _comfy_replace(value: object, replacements: dict[str, object]) -> object:
+    if isinstance(value, dict):
+        return {
+            str(key): _comfy_replace(item, replacements)
+            for key, item in cast(dict[object, object], value).items()
+        }
+    if isinstance(value, list):
+        return [_comfy_replace(item, replacements) for item in cast(list[object], value)]
+    if not isinstance(value, str):
+        return value
+    if value in replacements:
+        return replacements[value]
+    rendered = value
+    for placeholder, replacement in replacements.items():
+        rendered = rendered.replace(placeholder, str(replacement))
+    return rendered
+
+
+class ComfyUIImageGenerationClient(ImageGenerationProvider):
+    """Client for a standard ComfyUI server using API-format workflows."""
+
+    provider_name = "comfyui"
+    model_options = ("model.safetensors",)
+    default_timeout = 300.0
+
+    def _default_base_url(self) -> str:
+        return "http://127.0.0.1:8188"
+
+    def _resolve_base_url(self, api_base: str | None) -> str:
+        return (api_base or self._default_base_url()).rstrip("/")
+
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        reference_images: list[str] | None = None,
+        aspect_ratio: str | None = None,
+        image_size: str | None = None,
+    ) -> GeneratedImageResponse:
+        width, height = _ollama_dimensions(aspect_ratio, image_size)
+        options = dict(self.extra_body)
+        configured_workflow = options.pop("workflow", None)
+        workflow_source: object = configured_workflow or _COMFY_DEFAULT_WORKFLOW
+        if not isinstance(workflow_source, dict):
+            raise ImageGenerationError("ComfyUI extraBody.workflow must be an API-format object")
+        references = list(reference_images or [])
+        first_reference = image_path_to_data_url(references[0]) if references else ""
+        replacements: dict[str, object] = {
+            "%prompt%": prompt,
+            "%negative_prompt%": str(options.pop("negative_prompt", "")),
+            "%model%": model,
+            "%width%": width,
+            "%height%": height,
+            "%seed%": secrets.randbelow(2**63 - 1),
+            "%reference_image%": first_reference,
+        }
+        for key, value in options.items():
+            replacements[f"%{key}%"] = value
+        rendered = _comfy_replace(cast(dict[str, object], workflow_source), replacements)
+        if not isinstance(rendered, dict):
+            raise ImageGenerationError("ComfyUI workflow rendering failed")
+        rendered_workflow = cast(dict[str, object], rendered)
+
+        headers = {**_basic_auth_header(self.api_key), **self.extra_headers}
+        client = self._client or httpx.AsyncClient(**self._http_client_kwargs())
+        try:
+            submit = await client.post(
+                f"{self.api_base}/prompt",
+                headers=headers,
+                json={"prompt": rendered_workflow},
+            )
+            try:
+                submit.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise ImageGenerationError(
+                    f"ComfyUI workflow submission failed: {_http_error_detail(submit)}"
+                ) from exc
+            submitted = _as_json_object(submit.json()) or {}
+            prompt_id = submitted.get("prompt_id")
+            if not isinstance(prompt_id, str) or not prompt_id:
+                raise ImageGenerationError("ComfyUI did not return a prompt_id")
+            history_item = await self._poll_history(client, prompt_id, headers)
+            images = await self._download_outputs(client, history_item, headers)
+        finally:
+            if self._client is None:
+                await client.aclose()
+
+        self._require_images(images, history_item)
+        return GeneratedImageResponse(images=images, content="", raw=history_item)
+
+    async def _poll_history(
+        self,
+        client: httpx.AsyncClient,
+        prompt_id: str,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        attempts = max(1, int(self.timeout / _COMFY_POLL_INTERVAL_S))
+        for _ in range(attempts):
+            response = await client.get(f"{self.api_base}/history/{prompt_id}", headers=headers)
+            response.raise_for_status()
+            payload = _as_json_object(response.json()) or {}
+            item = _as_json_object(payload.get(prompt_id))
+            if item is not None:
+                status = _as_json_object(item.get("status")) or {}
+                if status.get("status_str") == "error":
+                    raise ImageGenerationError("ComfyUI workflow execution failed")
+                return item
+            await asyncio.sleep(_COMFY_POLL_INTERVAL_S)
+        raise ImageGenerationError("ComfyUI image generation timed out")
+
+    async def _download_outputs(
+        self,
+        client: httpx.AsyncClient,
+        history_item: dict[str, Any],
+        headers: dict[str, str],
+    ) -> list[str]:
+        outputs = _as_json_object(history_item.get("outputs")) or {}
+        image_infos: list[dict[str, Any]] = []
+        for output in outputs.values():
+            output_data = _as_json_object(output) or {}
+            image_infos.extend(_as_json_objects(output_data.get("images")))
+        images: list[str] = []
+        for info in image_infos:
+            filename = info.get("filename")
+            if not isinstance(filename, str) or not filename:
+                continue
+            response = await client.get(
+                f"{self.api_base}/view",
+                headers=headers,
+                params={
+                    "filename": filename,
+                    "subfolder": str(info.get("subfolder") or ""),
+                    "type": str(info.get("type") or "output"),
+                },
+            )
+            response.raise_for_status()
+            mime = detect_image_mime(response.content)
+            if mime is None:
+                continue
+            encoded = base64.b64encode(response.content).decode("ascii")
+            images.append(f"data:{mime};base64,{encoded}")
+        return images
 
 
 class OllamaImageGenerationClient(ImageGenerationProvider):
@@ -2117,7 +2373,9 @@ class ModelScopeImageGenerationClient(ImageGenerationProvider):
 # ---------------------------------------------------------------------------
 
 register_image_gen_provider(AIHubMixImageGenerationClient)
+register_image_gen_provider(Automatic1111ImageGenerationClient)
 register_image_gen_provider(CodexImageGenerationClient)
+register_image_gen_provider(ComfyUIImageGenerationClient)
 register_image_gen_provider(CustomImageGenerationClient)
 register_image_gen_provider(GeminiImageGenerationClient)
 register_image_gen_provider(OllamaImageGenerationClient)

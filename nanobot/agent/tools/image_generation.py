@@ -124,8 +124,9 @@ class ImageGenerationTool(Tool):
     def description(self) -> str:
         return (
             "Generate or edit images and store them as persistent artifacts. "
-            "Returns artifact ids and local paths. For edits, pass prior generated image paths "
-            "or user image paths as reference_images."
+            "Generated images are automatically attached to the reply in the active session. "
+            "Returns artifact ids and local paths for edits; pass prior generated image paths "
+            "or user image paths as reference_images. Do not call message to resend the result."
         )
 
     def _provider_config(self) -> ProviderConfig | None:

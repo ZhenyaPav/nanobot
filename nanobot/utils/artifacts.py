@@ -9,7 +9,7 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from nanobot.config.paths import get_media_dir
 from nanobot.utils.helpers import detect_image_mime, ensure_dir
@@ -21,6 +21,7 @@ _MIME_EXTENSIONS = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+_GENERATE_IMAGE_TOOL_NAME = "generate_image"
 
 class ArtifactError(ValueError):
     """Raised when an artifact cannot be safely decoded or stored."""
@@ -113,10 +114,54 @@ def generated_image_tool_result(artifacts: list[dict[str, Any]]) -> str:
             "artifacts": artifacts,
             "next_step": (
                 "Use these artifact paths as reference_images for follow-up edits. "
-                "Call the message tool with the artifact paths in the media parameter "
-                "to deliver the images to the user. Keep raw paths internal unless the "
+                "The runtime automatically attaches them to the current reply; do not call "
+                "the message tool just to resend them. Keep raw paths internal unless the "
                 "user asks for debug details."
             ),
         },
         ensure_ascii=False,
     )
+
+
+def _extract_text_payload(content: object) -> str | None:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    parts: list[str] = []
+    for value in cast(list[object], content):
+        if not isinstance(value, dict):
+            continue
+        block = cast(dict[object, object], value)
+        text = block.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts) if parts else None
+
+
+def generated_image_paths_from_messages(messages: list[dict[str, Any]]) -> list[str]:
+    """Collect unique artifact paths from successful ``generate_image`` results."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for message in messages:
+        if message.get("role") != "tool" or message.get("name") != _GENERATE_IMAGE_TOOL_NAME:
+            continue
+        payload = _extract_text_payload(message.get("content"))
+        if not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        artifacts = cast(dict[object, object], data).get("artifacts") if isinstance(data, dict) else None
+        if not isinstance(artifacts, list):
+            continue
+        for value in cast(list[object], artifacts):
+            if not isinstance(value, dict):
+                continue
+            artifact = cast(dict[object, object], value)
+            path = artifact.get("path")
+            if isinstance(path, str) and path and path not in seen:
+                paths.append(path)
+                seen.add(path)
+    return paths

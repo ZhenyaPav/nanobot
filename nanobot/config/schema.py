@@ -262,6 +262,8 @@ class ProvidersConfig(Base):
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
+    automatic1111: ProviderConfig = Field(default_factory=ProviderConfig)
+    comfyui: ProviderConfig = Field(default_factory=ProviderConfig)
     assemblyai: ProviderConfig = Field(default_factory=ProviderConfig)  # AssemblyAI voice transcription
     huggingface: ProviderConfig = Field(default_factory=ProviderConfig)
     skywork: ProviderConfig = Field(default_factory=ProviderConfig)  # Skywork / APIFree API gateway
@@ -369,6 +371,17 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
+class EmotionClassificationConfig(Base):
+    """Optional backend classifier for completed assistant responses."""
+
+    enabled: bool = False
+    endpoint: str = "http://127.0.0.1:5101/classify"
+    api_key: str | None = Field(default=None, repr=False)
+    timeout: float = Field(default=10.0, gt=0, le=120)
+    top_k: int = Field(default=5, ge=1, le=28)
+    fallback_label: str = "neutral"
+
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -436,6 +449,11 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    emotion_classification: EmotionClassificationConfig = Field(
+        default_factory=EmotionClassificationConfig,
+        validation_alias=AliasChoices("emotionClassification", "emotion_classification"),
+        serialization_alias="emotionClassification",
+    )
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     model_presets: dict[str, ModelPresetConfig] = Field(
         default_factory=dict,

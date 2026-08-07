@@ -726,6 +726,28 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="https://api.assemblyai.com/v2",
         is_transcription_only=True,
     ),
+    # Local image-generation backends. They appear in provider settings for
+    # URL/auth/workflow configuration but are excluded from chat model pickers.
+    ProviderSpec(
+        name="automatic1111",
+        keywords=(),
+        env_key="",
+        display_name="AUTOMATIC1111 / Forge",
+        backend="openai_compat",
+        default_api_base="http://127.0.0.1:7860",
+        is_local=True,
+        is_transcription_only=True,
+    ),
+    ProviderSpec(
+        name="comfyui",
+        keywords=(),
+        env_key="",
+        display_name="ComfyUI",
+        backend="openai_compat",
+        default_api_base="http://127.0.0.1:8188",
+        is_local=True,
+        is_transcription_only=True,
+    ),
     # Qianfan (百度千帆): OpenAI-compatible API
     ProviderSpec(
         name="qianfan",

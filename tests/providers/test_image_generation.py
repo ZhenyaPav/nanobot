@@ -9,7 +9,9 @@ import pytest
 
 from nanobot.providers.image_generation import (
     AIHubMixImageGenerationClient,
+    Automatic1111ImageGenerationClient,
     CodexImageGenerationClient,
+    ComfyUIImageGenerationClient,
     CustomImageGenerationClient,
     GeminiImageGenerationClient,
     GeneratedImageResponse,
@@ -229,6 +231,92 @@ async def test_ollama_image_generation_rejects_reference_images() -> None:
             model="x/z-image-turbo",
             reference_images=["ref.png"],
         )
+
+
+@pytest.mark.asyncio
+async def test_automatic1111_txt2img_payload_and_response() -> None:
+    raw_b64 = PNG_DATA_URL.removeprefix("data:image/png;base64,")
+    fake = FakeClient(FakeResponse({"images": [raw_b64]}))
+    client = Automatic1111ImageGenerationClient(
+        api_key="user:pass",
+        api_base="http://127.0.0.1:7860/sdapi/v1",
+        extra_body={"steps": 24},
+        client=fake,  # type: ignore[arg-type]
+    )
+
+    response = await client.generate(
+        prompt="a lighthouse",
+        model="dream.safetensors",
+        aspect_ratio="16:9",
+        image_size="1K",
+    )
+
+    assert response.images == [PNG_DATA_URL]
+    call = fake.calls[0]
+    assert call["url"] == "http://127.0.0.1:7860/sdapi/v1/txt2img"
+    assert call["headers"]["Authorization"].startswith("Basic ")
+    assert call["json"]["width"] == 1024
+    assert call["json"]["height"] == 576
+    assert call["json"]["steps"] == 24
+    assert call["json"]["override_settings"] == {
+        "sd_model_checkpoint": "dream.safetensors"
+    }
+
+
+class FakeComfyClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def post(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": "POST", "url": url, **kwargs})
+        return FakeResponse({"prompt_id": "prompt-1"})
+
+    async def get(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": "GET", "url": url, **kwargs})
+        if "/history/" in url:
+            return FakeResponse(
+                {
+                    "prompt-1": {
+                        "status": {"status_str": "success"},
+                        "outputs": {
+                            "9": {
+                                "images": [
+                                    {"filename": "nanobot.png", "subfolder": "", "type": "output"}
+                                ]
+                            }
+                        },
+                    }
+                }
+            )
+        return FakeResponse({}, content=PNG_BYTES)
+
+
+@pytest.mark.asyncio
+async def test_comfyui_submits_workflow_and_downloads_output() -> None:
+    fake = FakeComfyClient()
+    client = ComfyUIImageGenerationClient(
+        api_key=None,
+        api_base="http://127.0.0.1:8188",
+        extra_body={"negative_prompt": "watermark"},
+        client=fake,  # type: ignore[arg-type]
+    )
+
+    response = await client.generate(
+        prompt="a quiet forest",
+        model="forest.safetensors",
+        aspect_ratio="1:1",
+        image_size="1K",
+    )
+
+    assert len(response.images) == 1
+    assert response.images[0].startswith("data:image/png;base64,")
+    submit = fake.calls[0]
+    assert submit["url"] == "http://127.0.0.1:8188/prompt"
+    workflow = submit["json"]["prompt"]
+    assert workflow["4"]["inputs"]["ckpt_name"] == "forest.safetensors"
+    assert workflow["6"]["inputs"]["text"] == "a quiet forest"
+    assert workflow["7"]["inputs"]["text"] == "watermark"
+    assert any(call["url"] == "http://127.0.0.1:8188/view" for call in fake.calls)
 
 
 @pytest.mark.asyncio

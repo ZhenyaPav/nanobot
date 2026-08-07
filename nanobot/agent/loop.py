@@ -43,12 +43,13 @@ from nanobot.agent.turn_delivery import (
 )
 from nanobot.agent.turn_delivery import TurnRoute as TurnRoute
 from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
-from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.events import OUTBOUND_META_EMOTION, InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import StreamedResponseEvent
 from nanobot.bus.queue import MessageBus
 from nanobot.bus.runtime_events import RuntimeEventBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
+from nanobot.emotions import EmotionClassifierClient
 from nanobot.providers.base import LLMProvider, ProviderConversationState
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.runtime_context import (
@@ -84,6 +85,7 @@ from nanobot.session.model_selection import (
     model_preset_from_metadata,
 )
 from nanobot.triggers.local_turns import LocalTriggerTurnCoordinator
+from nanobot.utils.artifacts import generated_image_paths_from_messages
 from nanobot.utils.cancellation import task_is_cancelling
 from nanobot.utils.document import reference_non_image_attachments
 from nanobot.utils.helpers import image_placeholder_text
@@ -98,6 +100,7 @@ if TYPE_CHECKING:
     from nanobot.config.schema import (
         ChannelsConfig,
         Config,
+        EmotionClassificationConfig,
         MCPServerConfig,
         ProviderConfig,
         ToolsConfig,
@@ -142,6 +145,8 @@ class TurnContext:
     save_skip: int = 0
 
     outbound: OutboundMessage | None = None
+    generated_media: list[str] = field(default_factory=list)
+    emotion: dict[str, Any] | None = None
     suppress_response: bool = False
 
     on_progress: Callable[..., Awaitable[None]] | None = None
@@ -290,6 +295,7 @@ class AgentLoop:
         restart_mode: str = "auto",
         local_trigger_store: LocalTriggerStore | None = None,
         idle_compact_check_interval_seconds: int = 0,
+        emotion_classification: EmotionClassificationConfig | None = None,
     ):
         from nanobot.config.schema import ToolsConfig
 
@@ -350,6 +356,11 @@ class AgentLoop:
             else defaults.tool_hint_max_length
         )
         self.tools_config = _tc
+        self.emotion_classifier = (
+            EmotionClassifierClient(emotion_classification)
+            if emotion_classification is not None and emotion_classification.enabled
+            else None
+        )
         self.web_config = _tc.web
         self.exec_config = _tc.exec
         self._image_generation_provider_configs = dict(image_generation_provider_configs or {})
@@ -506,6 +517,10 @@ class AgentLoop:
             model_preset=defaults.model_preset,
             dream_model_preset=defaults.dream.model_override,
             restart_mode=config.gateway.restart_mode,
+            emotion_classification=extra.pop(
+                "emotion_classification",
+                config.emotion_classification,
+            ),
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
             **extra,
@@ -1556,6 +1571,7 @@ class AgentLoop:
         had_injections: bool,
         streamed_content: bool,
         *,
+        media: list[str] | None = None,
         turn_latency_ms: int | None = None,
     ) -> OutboundMessage | None:
         """Assemble the final outbound message from turn results."""
@@ -1578,6 +1594,7 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
+            media=list(media or []),
             event=event,
             metadata=meta,
         )
@@ -1843,12 +1860,40 @@ class AgentLoop:
         session = ctx.require_session()
         turn_continuation.prepare_save_boundary(ctx)
 
+        ctx.generated_media = generated_image_paths_from_messages(
+            ctx.all_messages[ctx.save_skip:]
+        )
+        if ctx.generated_media:
+            for message in reversed(ctx.all_messages[ctx.save_skip:]):
+                if message.get("role") == "assistant" and message.get("content"):
+                    existing = message.get("media")
+                    prior_media = (
+                        [
+                            item
+                            for item in cast(list[object], existing)
+                            if isinstance(item, str)
+                        ]
+                        if isinstance(existing, list)
+                        else []
+                    )
+                    message["media"] = [*prior_media, *ctx.generated_media]
+                    break
+
         if (
             ctx.kind is TurnKind.USER
             and (ctx.final_content is None or not ctx.final_content.strip())
             and not ctx.suppress_response
         ):
             ctx.final_content = EMPTY_FINAL_RESPONSE_MESSAGE
+
+        if self.emotion_classifier is not None and ctx.final_content:
+            classification = await self.emotion_classifier.classify(ctx.final_content)
+            if classification is not None:
+                ctx.emotion = classification.metadata()
+                for message in reversed(ctx.all_messages[ctx.save_skip:]):
+                    if message.get("role") == "assistant" and message.get("content"):
+                        message["emotion"] = dict(ctx.emotion)
+                        break
 
         latency_started_at = (
             ctx.visible_run_started_at
@@ -1899,7 +1944,10 @@ class AgentLoop:
                 stop_reason=ctx.stop_reason,
                 streamed=ctx.streamed_content,
                 latency_ms=ctx.turn_latency_ms,
+                media=ctx.generated_media,
             )
+            if ctx.emotion is not None:
+                ctx.outbound.metadata[OUTBOUND_META_EMOTION] = dict(ctx.emotion)
             return
         ctx.outbound = self._assemble_outbound(
             ctx.msg,
@@ -1907,10 +1955,13 @@ class AgentLoop:
             ctx.stop_reason,
             ctx.had_injections,
             ctx.streamed_content,
+            media=ctx.generated_media,
             turn_latency_ms=ctx.turn_latency_ms,
         )
         if ctx.ephemeral and ctx.outbound is not None:
             ctx.outbound.metadata["_stop_reason"] = ctx.stop_reason
+        if ctx.outbound is not None and ctx.emotion is not None:
+            ctx.outbound.metadata[OUTBOUND_META_EMOTION] = dict(ctx.emotion)
 
     def _sanitize_persisted_blocks(
         self,

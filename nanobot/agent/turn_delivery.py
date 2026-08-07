@@ -202,6 +202,7 @@ class TurnDelivery:
         stop_reason: str,
         streamed: bool,
         latency_ms: int | None,
+        media: list[str] | None = None,
     ) -> OutboundMessage:
         metadata = dict(self.route.metadata)
         if self.route.publish_lifecycle and latency_ms is not None:
@@ -217,6 +218,7 @@ class TurnDelivery:
             channel=self.route.channel,
             chat_id=self.route.chat_id,
             content=content or "Background task completed.",
+            media=list(media or []),
             metadata=metadata,
             event=event,
         )

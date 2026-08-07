@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 # payloads. Value is JSON-serializable with at least ``kind``; rich clients may
 # render it and other channels may ignore unknown keys.
 OUTBOUND_META_AGENT_UI = "_agent_ui"
+OUTBOUND_META_EMOTION = "_emotion"
 
 # Internal-only inbound metadata used by in-process channels to ask the agent
 # loop to update runtime state without going through a user session.

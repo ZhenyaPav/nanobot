@@ -34,7 +34,7 @@ This snippet uses the current built-in image-generation default so the JSON has 
 }
 ```
 
-See [Provider Notes](#provider-notes) for Custom, AIHubMix, MiniMax, Gemini, Ollama, StepFun, Zhipu, and ModelScope configuration examples.
+See [Provider Notes](#provider-notes) for AUTOMATIC1111, ComfyUI, Custom, and hosted provider examples.
 
 > [!TIP]
 > Prefer environment variables for API keys. nanobot resolves `${VAR_NAME}` values from the environment at startup.
@@ -55,7 +55,7 @@ The WebUI hides provider storage details from the user. The agent sees the saved
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `tools.imageGeneration.enabled` | boolean | `false` | Register the `generate_image` tool |
-| `tools.imageGeneration.provider` | string | `"openrouter"` | Current built-in image provider default. Supported values: `openrouter`, `openai`, `openai_codex`, `custom`, `aihubmix`, `minimax`, `gemini`, `ollama`, `stepfun`, `zhipu`, `modelscope` |
+| `tools.imageGeneration.provider` | string | `"openrouter"` | Current built-in image provider default. Supported values include `automatic1111`, `comfyui`, `openrouter`, `openai`, `openai_codex`, `custom`, `aihubmix`, `minimax`, `gemini`, `ollama`, `stepfun`, `zhipu`, and `modelscope` |
 | `tools.imageGeneration.model` | string | `"openai/gpt-5.4-image-2"` | Provider model name |
 | `tools.imageGeneration.defaultAspectRatio` | string | `"1:1"` | Default ratio when the prompt/tool call does not specify one |
 | `tools.imageGeneration.defaultImageSize` | string | `"1K"` | Default size hint, for example `1K`, `2K`, `4K`, or `1024x1024` |
@@ -77,6 +77,69 @@ For providers that return image URLs, direct downloads use DNS pinning. When an 
 Both camelCase and snake_case config keys are accepted, but docs use camelCase to match `config.json`.
 
 ## Provider Notes
+
+### AUTOMATIC1111 / Forge / SD.Next
+
+Start the WebUI with its API enabled, then configure its base URL. Generated images use
+`/sdapi/v1/txt2img`; a `reference_images` tool argument switches to `/sdapi/v1/img2img`.
+`apiKey` is optional and, when set, is interpreted as `username:password` HTTP Basic auth.
+
+```json
+{
+  "providers": {
+    "automatic1111": {
+      "apiBase": "http://127.0.0.1:7860",
+      "extraBody": {
+        "negative_prompt": "low quality, watermark",
+        "steps": 24,
+        "cfg_scale": 7
+      }
+    }
+  },
+  "tools": {
+    "imageGeneration": {
+      "enabled": true,
+      "provider": "automatic1111",
+      "model": "default"
+    }
+  }
+}
+```
+
+Set `model` to an installed checkpoint title to send it through
+`override_settings.sd_model_checkpoint`, or keep `default` to use the server's active model.
+
+### ComfyUI
+
+The built-in API-format workflow uses standard ComfyUI nodes and the checkpoint named by
+`tools.imageGeneration.model`. For custom models or image-to-image flows, put an exported API
+workflow in `providers.comfyui.extraBody.workflow`. The substitutions `%prompt%`,
+`%negative_prompt%`, `%model%`, `%width%`, `%height%`, `%seed%`, and `%reference_image%` are
+supported. Additional `extraBody` keys become same-named `%key%` substitutions.
+
+```json
+{
+  "providers": {
+    "comfyui": {
+      "apiBase": "http://127.0.0.1:8188",
+      "extraBody": {
+        "negative_prompt": "low quality, watermark"
+      }
+    }
+  },
+  "tools": {
+    "imageGeneration": {
+      "enabled": true,
+      "provider": "comfyui",
+      "model": "your-checkpoint.safetensors"
+    }
+  }
+}
+```
+
+ComfyUI requests are submitted to `/prompt`, polled through `/history/{prompt_id}`, and all
+image outputs are downloaded through `/view`. A custom reference-image workflow should use a
+base64-capable load node with `%reference_image%`.
 
 ### OpenRouter
 
@@ -399,7 +462,7 @@ Use the reference image. Keep the same robot and composition, change the palette
 |---------|-------|
 | `generate_image` is not available | Enable image generation in **Settings → Image** and save. For manual config changes, restart the gateway |
 | Missing API key error | Configure `providers.<provider>.apiKey`; if using `${VAR_NAME}`, confirm the environment variable is visible to the gateway process |
-| `unsupported image generation provider` | Use `openrouter`, `openai`, `openai_codex`, `custom`, `aihubmix`, `minimax`, `gemini`, `ollama`, `stepfun`, `zhipu`, or `modelscope` |
+| `unsupported image generation provider` | Use `automatic1111`, `comfyui`, `openrouter`, `openai`, `openai_codex`, `custom`, `aihubmix`, `minimax`, `gemini`, `ollama`, `stepfun`, `zhipu`, or `modelscope` |
 | AIHubMix says `Incorrect model ID` | Use `model: "gpt-image-2-free"`; nanobot expands it to the required `openai/gpt-image-2-free` model path internally |
 | Generation times out | Try a smaller/default image size, set AIHubMix `extraBody.quality` to `"low"`, or retry later |
 | Reference image rejected | Reference image paths must be inside the workspace or nanobot media directory and must be valid image files |

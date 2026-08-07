@@ -81,6 +81,13 @@ documents = [
 langfuse = [
     "langfuse>=3.0.0,<4.0.0",
 ]
+emotion = [
+    "aiohttp>=3.9.0,<4.0.0",
+    "huggingface-hub>=0.27.0,<2.0.0",
+    "numpy>=1.26.0,<3.0.0",
+    "onnxruntime>=1.20.0,<2.0.0",
+    "tokenizers>=0.20.0,<1.0.0",
+]
 pdf = [
     # Compatibility extra: PDF reading is bundled since v0.2.3.
     "pypdf>=5.0.0,<6.0.0",
