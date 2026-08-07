@@ -9,6 +9,7 @@ settings payload shape and the allowlisted config mutations exposed to WebUI.
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
@@ -764,6 +765,71 @@ def _extract_model_rows(body: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _comfyui_models_payload(
+    provider_key: str,
+    spec: Any,
+    provider_config: ProviderConfig,
+) -> dict[str, Any]:
+    """Fetch ComfyUI checkpoint names for the Image Generation settings picker."""
+    base_payload: dict[str, Any] = {
+        "provider": provider_key,
+        "label": spec.label,
+        "catalog_kind": "local",
+        "models": [],
+        "model_count": 0,
+        "message": None,
+        "fetched_at": time.time(),
+    }
+    api_base = _resolve_env_placeholders(provider_config.api_base) or spec.default_api_base
+    if not api_base:
+        return {
+            **base_payload,
+            "status": "missing_api_base",
+            "message": "Configure a ComfyUI API base URL to load checkpoints.",
+        }
+
+    headers = {"Accept": "application/json"}
+    api_key = _resolve_env_placeholders(provider_config.api_key)
+    if api_key:
+        encoded = base64.b64encode(api_key.encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {encoded}"
+    models_url = f"{api_base.rstrip('/')}/models/checkpoints"
+    try:
+        response = httpx.get(
+            models_url,
+            headers=headers,
+            timeout=10.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        rows = _extract_model_rows(response.json())
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in {401, 403}:
+            return {
+                **base_payload,
+                "status": "not_configured",
+                "message": "ComfyUI rejected the configured credential.",
+            }
+        return {
+            **base_payload,
+            "status": "error",
+            "message": f"ComfyUI checkpoint request failed with HTTP {status}.",
+        }
+    except (httpx.HTTPError, ValueError) as exc:
+        return {
+            **base_payload,
+            "status": "error",
+            "message": f"Could not load ComfyUI checkpoints: {exc}",
+        }
+    return {
+        **base_payload,
+        "status": "available",
+        "models": rows,
+        "model_count": len(rows),
+    }
+
+
 def provider_models_payload(query: QueryParams) -> dict[str, Any]:
     """Fetch an OpenAI-compatible provider's model list for Settings.
 
@@ -780,6 +846,9 @@ def provider_models_payload(query: QueryParams) -> dict[str, Any]:
     if resolved_provider is None:
         raise WebUISettingsError("unknown provider")
     spec, provider_key, provider_config = resolved_provider
+
+    if provider_key == "comfyui":
+        return _comfyui_models_payload(provider_key, spec, provider_config)
 
     catalog_kind = _model_catalog_kind(spec)
     base_payload: dict[str, Any] = {

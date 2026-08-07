@@ -266,6 +266,7 @@ type ProviderForm = {
   proxy: string;
   extraHeaders: string;
   extraBody: string;
+  comfyWorkflow: string;
   extraQuery: string;
   thinkingStyle: string;
   region: string;
@@ -364,6 +365,32 @@ function parseProviderExtraBody(value: string): Record<string, unknown> | null {
   }
 }
 
+function comfyWorkflowFromExtraBody(value: Record<string, unknown> | null | undefined): string {
+  const workflow = value?.workflow;
+  return workflow && typeof workflow === "object" && !Array.isArray(workflow)
+    ? JSON.stringify(workflow, null, 2)
+    : "";
+}
+
+function extraBodyWithoutComfyWorkflow(
+  value: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const next = { ...(value ?? {}) };
+  delete next.workflow;
+  return next;
+}
+
+function providerExtraBodyForSave(providerName: string, form: ProviderForm): string | null {
+  if (providerName !== "comfyui") return form.extraBody.trim();
+  const extraBody = parseProviderExtraBody(form.extraBody);
+  if (extraBody === null) return null;
+  const workflowSource = form.comfyWorkflow.trim();
+  if (!workflowSource) return providerJsonValue(extraBody);
+  const workflow = parseProviderExtraBody(workflowSource);
+  if (workflow === null) return null;
+  return providerJsonValue({ ...extraBody, workflow });
+}
+
 function isHostedSearchTool(tool: unknown, toolType: "web_search" | "x_search"): boolean {
   if (!tool || typeof tool !== "object" || Array.isArray(tool)) return false;
   const configuredType = (tool as Record<string, unknown>).type;
@@ -419,6 +446,7 @@ function updateProviderRequestOption(
 function providerFormFromRow(
   provider: SettingsPayload["providers"][number],
 ): ProviderForm {
+  const isComfyUi = provider.name === "comfyui";
   return {
     displayName: provider.is_custom ? provider.label : "",
     apiKey: "",
@@ -426,7 +454,10 @@ function providerFormFromRow(
     apiType: provider.api_type ?? "auto",
     proxy: provider.proxy ?? "",
     extraHeaders: providerJsonValue(provider.extra_headers),
-    extraBody: providerJsonValue(provider.extra_body),
+    extraBody: providerJsonValue(
+      isComfyUi ? extraBodyWithoutComfyWorkflow(provider.extra_body) : provider.extra_body,
+    ),
+    comfyWorkflow: isComfyUi ? comfyWorkflowFromExtraBody(provider.extra_body) : "",
     extraQuery: providerJsonValue(provider.extra_query),
     thinkingStyle: provider.thinking_style ?? "",
     region: provider.region ?? "",
@@ -444,6 +475,7 @@ function emptyCustomProviderDraft(): CustomProviderDraft {
     proxy: "",
     extraHeaders: "",
     extraBody: "",
+    comfyWorkflow: "",
     extraQuery: "",
     thinkingStyle: "",
     region: "",
@@ -1594,6 +1626,15 @@ export function SettingsView({
       setError(t("settings.byok.apiKeyRequired"));
       return;
     }
+    const extraBody = providerExtraBodyForSave(providerName, providerForm);
+    if (extraBody === null) {
+      setError(
+        providerName === "comfyui"
+          ? "ComfyUI workflow and other image options must each be valid JSON objects."
+          : "Extra body must be a valid JSON object.",
+      );
+      return;
+    }
     setProviderSaving(providerName);
     try {
       const supportName = providerName === "bedrock"
@@ -1614,7 +1655,7 @@ export function SettingsView({
         if (field === "extra_headers") {
           update.extraHeaders = providerForm.extraHeaders.trim();
         }
-        if (field === "extra_body") update.extraBody = providerForm.extraBody.trim();
+        if (field === "extra_body") update.extraBody = extraBody;
         if (field === "extra_query") update.extraQuery = providerForm.extraQuery.trim();
         if (field === "thinking_style") {
           update.thinkingStyle = providerForm.thinkingStyle.trim();
@@ -4054,11 +4095,13 @@ function ProviderRequestOptions({
 }
 
 function ProviderAdvancedOptions({
+  providerName,
   fields,
   form,
   onChange,
   footer,
 }: {
+  providerName: string;
   fields: ProviderAdvancedField[];
   form: ProviderForm;
   onChange: (value: Partial<ProviderForm>) => void;
@@ -4067,6 +4110,8 @@ function ProviderAdvancedOptions({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const enabled = new Set(fields);
+  const hasComfyWorkflow = providerName.trim().toLowerCase() === "comfyui"
+    && enabled.has("extra_body");
   if (enabled.size === 0) return null;
 
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
@@ -4251,15 +4296,39 @@ function ProviderAdvancedOptions({
                 />
               </label>
             ) : null}
+            {hasComfyWorkflow ? (
+              <label className="block min-w-0 space-y-1.5 md:col-span-2">
+                <span className="text-[12px] font-medium text-muted-foreground">
+                  ComfyUI workflow (API format)
+                </span>
+                <Textarea
+                  aria-label="ComfyUI workflow (API format)"
+                  value={form.comfyWorkflow}
+                  onChange={(event) => onChange({ comfyWorkflow: event.target.value })}
+                  placeholder={'{"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"%model%"}}}'}
+                  spellCheck={false}
+                  className="min-h-[220px] resize-y rounded-[14px] bg-background font-mono text-[12px]"
+                />
+                <span className="block text-[11px] leading-4 text-muted-foreground">
+                  Paste ComfyUI's exported API workflow. nanobot replaces %prompt%, %model%,
+                  %width%, %height%, %seed%, %negative_prompt%, and %reference_image%.
+                </span>
+              </label>
+            ) : null}
             {enabled.has("extra_body") ? (
               <label className="block min-w-0 space-y-1.5 md:col-span-2">
                 <span className="text-[12px] font-medium text-muted-foreground">
-                  {tx("settings.providers.extraBody", "Extra body")}
+                  {hasComfyWorkflow
+                    ? "Other ComfyUI image options"
+                    : tx("settings.providers.extraBody", "Extra body")}
                 </span>
                 <Textarea
+                  aria-label={hasComfyWorkflow ? "Other ComfyUI image options" : undefined}
                   value={form.extraBody}
                   onChange={(event) => onChange({ extraBody: event.target.value })}
-                  placeholder={'{"service_tier":"priority"}'}
+                  placeholder={hasComfyWorkflow
+                    ? '{"negative_prompt":"low quality, watermark"}'
+                    : '{"service_tier":"priority"}'}
                   spellCheck={false}
                   className="min-h-[96px] resize-y rounded-[14px] bg-background font-mono text-[12px]"
                 />
@@ -4528,6 +4597,7 @@ function ProvidersSettings({
                 />
                 {supportsOauthAdvancedSettings ? (
                   <ProviderAdvancedOptions
+                    providerName={provider.name}
                     fields={advancedFields}
                     form={form}
                     onChange={(value) => onChangeProviderForm(provider.name, value)}
@@ -4657,6 +4727,7 @@ function ProvidersSettings({
                   onChange={(value) => onChangeProviderForm(provider.name, value)}
                 />
                 <ProviderAdvancedOptions
+                  providerName={provider.name}
                   fields={advancedFields}
                   form={form}
                   onChange={(value) => onChangeProviderForm(provider.name, value)}
@@ -4796,6 +4867,7 @@ function ProvidersSettings({
           </div>
         </label>
         <ProviderAdvancedOptions
+          providerName={CUSTOM_PROVIDER_CREATION_KEY}
           fields={CUSTOM_PROVIDER_ADVANCED_FIELDS}
           form={customProviderDraft}
           onChange={(value) =>
@@ -5041,6 +5113,7 @@ function ImageGenerationSettings({
               settings={settings}
               provider={form.provider}
               models={selectedProvider?.models ?? []}
+              fetchModels={form.provider === "comfyui"}
               value={form.model}
               showProviderLogos={showBrandLogos}
               emptyLabel={tx("settings.image.selectModel", "Select image model")}
@@ -8928,6 +9001,7 @@ function ModelIdPicker({
   settings,
   provider,
   models,
+  fetchModels = false,
   value,
   showProviderLogos,
   emptyLabel,
@@ -8939,6 +9013,7 @@ function ModelIdPicker({
   settings: SettingsPayload;
   provider: string;
   models?: string[];
+  fetchModels?: boolean;
   value: string;
   showProviderLogos: boolean;
   emptyLabel?: string;
@@ -8971,14 +9046,14 @@ function ModelIdPicker({
     providerRow?.auth_type === "oauth" &&
     !providerHasBuiltinModels;
   const canFetchModels =
-    !hasStaticModels &&
+    (!hasStaticModels || fetchModels) &&
     hasConcreteProvider && providerConfigured && !providerUsesManualModelIds;
   const normalizedQuery = query.trim().toLowerCase();
   const providerModels: ProviderModelsPayload["models"] = useMemo(
-    () => hasStaticModels
-      ? (models?.map((id) => ({ id })) ?? [])
-      : (payload?.models ?? []),
-    [hasStaticModels, models, payload?.models],
+    () => payload?.status === "available"
+      ? payload.models
+      : (hasStaticModels ? (models?.map((id) => ({ id })) ?? []) : []),
+    [hasStaticModels, models, payload?.models, payload?.status],
   );
   const visibleModels = useMemo(
     () => providerModels

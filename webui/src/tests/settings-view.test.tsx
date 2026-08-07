@@ -3562,6 +3562,122 @@ describe("SettingsView Apps catalog", () => {
     expect(await screen.findByRole("button", { name: "private/image-v2" })).toBeInTheDocument();
   });
 
+  it("loads ComfyUI checkpoints for the image model picker", async () => {
+    const base = settingsPayload();
+    const payload: SettingsPayload = {
+      ...base,
+      providers: [
+        {
+          name: "comfyui",
+          label: "ComfyUI",
+          configured: true,
+          auth_type: "api_key",
+          api_key_required: false,
+          api_key_hint: null,
+          api_base: "http://comfy.test:8188",
+          default_api_base: "http://127.0.0.1:8188",
+        },
+      ],
+      image_generation: {
+        ...base.image_generation,
+        provider: "comfyui",
+        model: "model.safetensors",
+        providers: [
+          {
+            name: "comfyui",
+            label: "ComfyUI",
+            configured: true,
+            models: ["model.safetensors"],
+            default_model: "model.safetensors",
+          },
+        ],
+      },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/settings/provider-models?provider=comfyui") {
+        return jsonResponse({
+          provider: "comfyui",
+          label: "ComfyUI",
+          status: "available",
+          catalog_kind: "local",
+          models: [{ id: "anime.safetensors" }, { id: "realism.safetensors" }],
+          model_count: 2,
+        });
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "image", initialSettings: payload });
+    await openPopover(screen.getByRole("button", { name: "model.safetensors" }));
+
+    expect(await screen.findByRole("option", { name: "anime.safetensors" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/provider-models?provider=comfyui",
+      expect.objectContaining({ headers: { Authorization: "Bearer tok" } }),
+    );
+  });
+
+  it("saves a dedicated ComfyUI workflow without overwriting image options", async () => {
+    const base = settingsPayload();
+    const payload: SettingsPayload = {
+      ...base,
+      providers: [
+        {
+          name: "comfyui",
+          label: "ComfyUI",
+          configured: true,
+          auth_type: "api_key",
+          api_key_required: false,
+          api_key_hint: null,
+          api_base: "http://comfy.test:8188",
+          default_api_base: "http://127.0.0.1:8188",
+          advanced_fields: ["extra_body"],
+          extra_body: { negative_prompt: "old quality" },
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith("/api/settings/provider/update?provider=comfyui")) {
+        return jsonResponse(payload);
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "models", initialSettings: payload });
+    fireEvent.click(
+      screen.getByRole("button", { name: /ComfyUI http:\/\/comfy\.test:8188/ }),
+    );
+    await screen.findByDisplayValue("http://comfy.test:8188");
+    const advancedOptions = screen.getByRole("button", { name: "Advanced options" });
+    fireEvent.click(advancedOptions);
+    expect(advancedOptions).toHaveAttribute("aria-expanded", "true");
+    fireEvent.change(await screen.findByLabelText("ComfyUI workflow (API format)"), {
+      target: { value: '{"4":{"class_type":"CheckpointLoaderSimple"}}' },
+    });
+    fireEvent.change(screen.getByLabelText("Other ComfyUI image options"), {
+      target: { value: '{"negative_prompt":"watermark","steps":28}' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+
+    await waitFor(() => {
+      const saveCall = fetchMock.mock.calls.find(([input]) =>
+        String(input).startsWith("/api/settings/provider/update?provider=comfyui"),
+      );
+      expect(saveCall).toBeDefined();
+      const headers = saveCall?.[1]?.headers as Record<string, string>;
+      const values = JSON.parse(decodeURIComponent(
+        headers["X-Nanobot-Provider-Values"],
+      )) as { extraBody: string };
+      expect(JSON.parse(values.extraBody)).toEqual({
+        negative_prompt: "watermark",
+        steps: 28,
+        workflow: { "4": { class_type: "CheckpointLoaderSimple" } },
+      });
+    });
+  });
+
   it("does not expose the synthetic default configuration as a WebUI preset", async () => {
     const base = settingsPayload();
     const payload: SettingsPayload = {

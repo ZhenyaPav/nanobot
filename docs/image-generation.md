@@ -113,7 +113,9 @@ Set `model` to an installed checkpoint title to send it through
 
 The built-in API-format workflow uses standard ComfyUI nodes and the checkpoint named by
 `tools.imageGeneration.model`. For custom models or image-to-image flows, put an exported API
-workflow in `providers.comfyui.extraBody.workflow`. The substitutions `%prompt%`,
+workflow in **Settings → Models → ComfyUI → Advanced options → ComfyUI workflow (API
+format)**. The editor stores it as `providers.comfyui.extraBody.workflow` without overwriting
+the separate **Other ComfyUI image options** JSON field. The substitutions `%prompt%`,
 `%negative_prompt%`, `%model%`, `%width%`, `%height%`, `%seed%`, and `%reference_image%` are
 supported. Additional `extraBody` keys become same-named `%key%` substitutions.
 
@@ -139,7 +141,8 @@ supported. Additional `extraBody` keys become same-named `%key%` substitutions.
 
 ComfyUI requests are submitted to `/prompt`, polled through `/history/{prompt_id}`, and all
 image outputs are downloaded through `/view`. A custom reference-image workflow should use a
-base64-capable load node with `%reference_image%`.
+base64-capable load node with `%reference_image%`. In WebUI Settings, opening the image-model
+picker fetches the live checkpoint list from ComfyUI's `/models/checkpoints` endpoint.
 
 ### OpenRouter
 

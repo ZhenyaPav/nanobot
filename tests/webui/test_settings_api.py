@@ -1799,6 +1799,38 @@ def test_provider_models_payload_fetches_openai_compatible_models(
     assert payload["models"][1]["context_window"] == 65536
 
 
+def test_provider_models_payload_fetches_comfyui_checkpoints(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.providers.comfyui.api_base = "http://comfy.test:8188"
+    config.providers.comfyui.api_key = "user:pass"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    def fake_get(url: str, **kwargs):
+        assert url == "http://comfy.test:8188/models/checkpoints"
+        assert kwargs["headers"]["Authorization"].startswith("Basic ")
+        return httpx.Response(
+            200,
+            json=["models/anime.safetensors", "models/realism.safetensors"],
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("nanobot.webui.settings_api.httpx.get", fake_get)
+
+    payload = provider_models_payload({"provider": ["comfyui"]})
+
+    assert payload["status"] == "available"
+    assert payload["catalog_kind"] == "local"
+    assert [model["id"] for model in payload["models"]] == [
+        "models/anime.safetensors",
+        "models/realism.safetensors",
+    ]
+
+
 def test_provider_models_payload_returns_curated_openai_codex_models() -> None:
     payload = provider_models_payload({"provider": ["openai_codex"]})
 
