@@ -1206,6 +1206,9 @@ class WebSocketChannel(BaseChannel):
             "chat_id": msg.chat_id,
             "text": wire_text,
         }
+        turn_id = (msg.metadata or {}).get(WEBUI_TURN_METADATA_KEY)
+        if isinstance(turn_id, str) and turn_id:
+            payload["turn_id"] = turn_id
         if msg.media:
             payload["media"] = msg.media
             urls: list[dict[str, str]] = []

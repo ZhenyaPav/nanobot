@@ -253,6 +253,27 @@ function absorbCompleteAssistantMessage(
   message: Omit<UIMessage, "id" | "role" | "createdAt">,
 ): UIMessage[] {
   const last = prev[prev.length - 1];
+  // Streamed replies already rendered their text through delta events. A
+  // media-only completion frame belongs on that same assistant bubble rather
+  // than becoming an empty second response.
+  if (
+    last
+    && last.role === "assistant"
+    && last.kind !== "trace"
+    && !message.content.trim()
+    && message.media?.length
+    && matchesTurn(last, message)
+  ) {
+    return [
+      ...prev.slice(0, -1),
+      {
+        ...last,
+        ...message,
+        content: last.content,
+        media: [...(last.media ?? []), ...message.media],
+      },
+    ];
+  }
   if (!last || !isReasoningOnlyPlaceholder(last) || !matchesTurn(last, message)) {
     return [
       ...prev,
@@ -1275,10 +1296,15 @@ export function useNanobotStream(
         // ``turn_end`` for non-streamed and tool-heavy turns.
         clearActivitySegment();
         setMessages((prev) => {
+          const isMediaOnlyCompletion = hasMedia && !ev.text.trim();
           const activeId = buffer.current?.messageId;
-          buffer.current = null;
-          activeAssistantRef.current = null;
-          const filtered = activeId ? prev.filter((m) => m.id !== activeId) : prev;
+          if (!isMediaOnlyCompletion) {
+            buffer.current = null;
+            activeAssistantRef.current = null;
+          }
+          const filtered = !isMediaOnlyCompletion && activeId
+            ? prev.filter((m) => m.id !== activeId)
+            : prev;
           const content = ev.text;
           const lat =
             typeof ev.latency_ms === "number" && ev.latency_ms >= 0

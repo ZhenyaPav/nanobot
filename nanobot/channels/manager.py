@@ -833,6 +833,19 @@ class ChannelManager:
             await ChannelManager._send_stream_event(channel, msg, event)
         elif isinstance(event, StreamEndEvent):
             await ChannelManager._send_stream_event(channel, msg, event)
+        elif isinstance(event, StreamedResponseEvent) and msg.media:
+            # The text has already arrived in stream deltas, but attachments only
+            # exist on the completed outbound message. Deliver a media-only frame
+            # so channels can render/send it without duplicating the final text.
+            await channel.send(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="",
+                reply_to=msg.reply_to,
+                media=list(msg.media),
+                metadata=dict(msg.metadata),
+                buttons=msg.buttons,
+            ))
         elif not isinstance(event, StreamedResponseEvent):
             await channel.send(msg)
 

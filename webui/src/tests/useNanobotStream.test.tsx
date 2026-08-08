@@ -2131,6 +2131,35 @@ describe("useNanobotStream", () => {
     ]);
   });
 
+  it("merges streamed-response media into its existing assistant message", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(() => useNanobotStream("chat-stream-media", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      fake.emit("chat-stream-media", {
+        event: "message",
+        chat_id: "chat-stream-media",
+        turn_id: "turn-image",
+        text: "Your image is ready.",
+      });
+      fake.emit("chat-stream-media", {
+        event: "message",
+        chat_id: "chat-stream-media",
+        turn_id: "turn-image",
+        text: "",
+        media_urls: [{ url: "/api/media/sig/image", name: "generated.png" }],
+      });
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].content).toBe("Your image is ready.");
+    expect(result.current.messages[0].media).toEqual([
+      { kind: "image", url: "/api/media/sig/image", name: "generated.png" },
+    ]);
+  });
+
   it("keeps assistant html media as a file attachment", () => {
     const fake = fakeClient();
     const { result } = renderHook(() => useNanobotStream("chat-html-media", EMPTY_MESSAGES), {

@@ -3109,9 +3109,9 @@ async def test_send_with_retry_calls_send_delta():
 
 
 @pytest.mark.asyncio
-async def test_send_with_retry_skips_send_when_streamed():
-    """_send_with_retry should not call send for streamed response events."""
-    send_called = False
+async def test_send_with_retry_delivers_media_without_streamed_text():
+    """A streamed response must still deliver its final media attachment."""
+    sent: list[OutboundMessage] = []
     send_delta_called = False
 
     class _StreamedChannel(BaseChannel):
@@ -3125,8 +3125,7 @@ async def test_send_with_retry_skips_send_when_streamed():
             pass
 
         async def send(self, msg: OutboundMessage) -> None:
-            nonlocal send_called
-            send_called = True
+            sent.append(msg)
 
         async def send_delta(
             self,
@@ -3160,8 +3159,22 @@ async def test_send_with_retry_skips_send_when_streamed():
     )
     await mgr._send_with_retry(mgr.channels["streamed"], msg)
 
-    assert send_called is False
+    assert sent == []
     assert send_delta_called is False
+
+    media_msg = OutboundMessage(
+        channel="streamed",
+        chat_id="123",
+        content="test",
+        media=["/tmp/generated.png"],
+        event=StreamedResponseEvent(),
+    )
+    await mgr._send_with_retry(mgr.channels["streamed"], media_msg)
+
+    assert len(sent) == 1
+    assert sent[0].content == ""
+    assert sent[0].media == ["/tmp/generated.png"]
+    assert sent[0].event is None
 
 
 def test_outbound_duplicate_suppression_is_scoped_to_origin_message() -> None:
