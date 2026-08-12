@@ -597,6 +597,8 @@ export interface SettingsPayload {
     model: string;
     default_aspect_ratio: string;
     default_image_size: string;
+    default_steps: number | null;
+    default_cfg_scale: number | null;
     max_images_per_turn: number;
     save_dir: string;
     providers: Array<{
@@ -1108,6 +1110,8 @@ export interface ImageGenerationSettingsUpdate {
   model: string;
   defaultAspectRatio: string;
   defaultImageSize: string;
+  defaultSteps: number;
+  defaultCfgScale: number;
   maxImagesPerTurn: number;
 }
 

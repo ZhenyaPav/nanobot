@@ -351,6 +351,8 @@ function modelSettings(model: string, provider: string): SettingsPayload {
       model: "openai/gpt-5.4-image-2",
       default_aspect_ratio: "1:1",
       default_image_size: "1K",
+      default_steps: null,
+      default_cfg_scale: null,
       max_images_per_turn: 4,
       save_dir: "generated",
       providers: [],

@@ -74,8 +74,8 @@ _COMFY_DEFAULT_WORKFLOW: dict[str, Any] = {
         "class_type": "KSampler",
         "inputs": {
             "seed": "%seed%",
-            "steps": 20,
-            "cfg": 7.0,
+            "steps": "%steps%",
+            "cfg": "%cfg%",
             "sampler_name": "euler",
             "scheduler": "normal",
             "denoise": 1.0,
@@ -103,6 +103,53 @@ _COMFY_DEFAULT_WORKFLOW: dict[str, Any] = {
         "class_type": "SaveImage",
         "inputs": {"filename_prefix": "nanobot", "images": ["8", 0]},
     },
+}
+_COMFY_ANIMA_WORKFLOW: dict[str, Any] = {
+    "3": {
+        "class_type": "KSampler",
+        "inputs": {
+            "seed": "%seed%",
+            "steps": "%steps%",
+            "cfg": "%cfg%",
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0,
+            "model": ["4", 0],
+            "positive": ["6", 0],
+            "negative": ["7", 0],
+            "latent_image": ["5", 0],
+        },
+    },
+    "4": {
+        "class_type": "UNETLoader",
+        "inputs": {"unet_name": "%model%", "weight_dtype": "default"},
+    },
+    "5": {
+        "class_type": "EmptyLatentImage",
+        "inputs": {"width": "%width%", "height": "%height%", "batch_size": 1},
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": "%prompt%", "clip": ["10", 0]},
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": "%negative_prompt%", "clip": ["10", 0]},
+    },
+    "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["11", 0]}},
+    "9": {
+        "class_type": "SaveImage",
+        "inputs": {"filename_prefix": "nanobot", "images": ["8", 0]},
+    },
+    "10": {
+        "class_type": "CLIPLoader",
+        "inputs": {
+            "clip_name": "%text_encoder%",
+            "type": "stable_diffusion",
+            "device": "default",
+        },
+    },
+    "11": {"class_type": "VAELoader", "inputs": {"vae_name": "%vae%"}},
 }
 
 
@@ -747,6 +794,34 @@ def _comfy_replace(value: object, replacements: dict[str, object]) -> object:
     return rendered
 
 
+def _comfy_model_defaults(model: str) -> tuple[int, float]:
+    normalized = model.casefold()
+    if "anima" in normalized and "turbo" in normalized:
+        return 10, 1.0
+    if "anima" in normalized:
+        return 30, 4.0
+    return 20, 7.0
+
+
+def _comfy_execution_error(status: dict[str, Any]) -> str:
+    messages = status.get("messages")
+    if isinstance(messages, list):
+        for raw_message in reversed(cast(list[object], messages)):
+            if not isinstance(raw_message, list) or len(raw_message) < 2:
+                continue
+            details = _as_json_object(raw_message[1])
+            if details is None:
+                continue
+            message = details.get("exception_message") or details.get("error")
+            node_id = details.get("node_id")
+            node_type = details.get("node_type")
+            if isinstance(message, str) and message.strip():
+                node = node_type or node_id
+                suffix = f" (node {node})" if node is not None else ""
+                return f"ComfyUI workflow execution failed{suffix}: {message.strip()}"
+    return "ComfyUI workflow execution failed"
+
+
 class ComfyUIImageGenerationClient(ImageGenerationProvider):
     """Client for a standard ComfyUI server using API-format workflows."""
 
@@ -772,19 +847,37 @@ class ComfyUIImageGenerationClient(ImageGenerationProvider):
         width, height = _ollama_dimensions(aspect_ratio, image_size)
         options = dict(self.extra_body)
         configured_workflow = options.pop("workflow", None)
-        workflow_source: object = configured_workflow or _COMFY_DEFAULT_WORKFLOW
+        is_anima = "anima" in model.casefold()
+        workflow_source: object = configured_workflow or (
+            _COMFY_ANIMA_WORKFLOW if is_anima else _COMFY_DEFAULT_WORKFLOW
+        )
         if not isinstance(workflow_source, dict):
             raise ImageGenerationError("ComfyUI extraBody.workflow must be an API-format object")
         references = list(reference_images or [])
         first_reference = image_path_to_data_url(references[0]) if references else ""
+        default_steps, default_cfg = _comfy_model_defaults(model)
+        steps = options.pop("steps", default_steps)
+        cfg = options.pop("cfg", options.pop("cfg_scale", default_cfg))
+        workflow_model = (
+            model.replace("\\", "/").rsplit("/", 1)[-1]
+            if is_anima and configured_workflow is None
+            else model
+        )
         replacements: dict[str, object] = {
             "%prompt%": prompt,
             "%negative_prompt%": str(options.pop("negative_prompt", "")),
-            "%model%": model,
+            "%model%": workflow_model,
             "%width%": width,
             "%height%": height,
             "%seed%": secrets.randbelow(2**63 - 1),
             "%reference_image%": first_reference,
+            "%steps%": steps,
+            "%cfg%": cfg,
+            "%cfg_scale%": cfg,
+            "%text_encoder%": options.pop(
+                "text_encoder", "qwen_3_06b_base.safetensors"
+            ),
+            "%vae%": options.pop("vae", "qwen_image_vae.safetensors"),
         }
         for key, value in options.items():
             replacements[f"%{key}%"] = value
@@ -835,7 +928,7 @@ class ComfyUIImageGenerationClient(ImageGenerationProvider):
             if item is not None:
                 status = _as_json_object(item.get("status")) or {}
                 if status.get("status_str") == "error":
-                    raise ImageGenerationError("ComfyUI workflow execution failed")
+                    raise ImageGenerationError(_comfy_execution_error(status))
                 return item
             await asyncio.sleep(_COMFY_POLL_INTERVAL_S)
         raise ImageGenerationError("ComfyUI image generation timed out")

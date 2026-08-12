@@ -617,6 +617,8 @@ const DEFAULT_IMAGE_GENERATION_FORM: ImageGenerationSettingsUpdate = {
   model: "openai/gpt-5.4-image-2",
   defaultAspectRatio: "1:1",
   defaultImageSize: "1K",
+  defaultSteps: 20,
+  defaultCfgScale: 7,
   maxImagesPerTurn: 4,
 };
 
@@ -694,13 +696,25 @@ function webSearchProviderRequiresApiKey(provider?: WebSearchProviderOption): bo
   return provider?.credential === "api_key";
 }
 
+function comfySamplerDefaults(model: string): { steps: number; cfgScale: number } {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("anima") && normalized.includes("turbo")) {
+    return { steps: 10, cfgScale: 1 };
+  }
+  if (normalized.includes("anima")) return { steps: 30, cfgScale: 4 };
+  return { steps: 20, cfgScale: 7 };
+}
+
 function imageGenerationFormFromPayload(payload: SettingsPayload): ImageGenerationSettingsUpdate {
+  const samplerDefaults = comfySamplerDefaults(payload.image_generation.model);
   return {
     enabled: payload.image_generation.enabled,
     provider: payload.image_generation.provider,
     model: payload.image_generation.model,
     defaultAspectRatio: payload.image_generation.default_aspect_ratio,
     defaultImageSize: payload.image_generation.default_image_size,
+    defaultSteps: payload.image_generation.default_steps ?? samplerDefaults.steps,
+    defaultCfgScale: payload.image_generation.default_cfg_scale ?? samplerDefaults.cfgScale,
     maxImagesPerTurn: payload.image_generation.max_images_per_turn,
   };
 }
@@ -1208,6 +1222,10 @@ export function SettingsView({
       imageGenerationForm.model !== settings.image_generation.model ||
       imageGenerationForm.defaultAspectRatio !== settings.image_generation.default_aspect_ratio ||
       imageGenerationForm.defaultImageSize !== settings.image_generation.default_image_size ||
+      imageGenerationForm.defaultSteps !== (settings.image_generation.default_steps ??
+        comfySamplerDefaults(settings.image_generation.model).steps) ||
+      imageGenerationForm.defaultCfgScale !== (settings.image_generation.default_cfg_scale ??
+        comfySamplerDefaults(settings.image_generation.model).cfgScale) ||
       imageGenerationForm.maxImagesPerTurn !== settings.image_generation.max_images_per_turn
     );
   }, [imageGenerationForm, settings]);
@@ -4311,7 +4329,8 @@ function ProviderAdvancedOptions({
                 />
                 <span className="block text-[11px] leading-4 text-muted-foreground">
                   Paste ComfyUI's exported API workflow. nanobot replaces %prompt%, %model%,
-                  %width%, %height%, %seed%, %negative_prompt%, and %reference_image%.
+                  %width%, %height%, %seed%, %steps%, %cfg%, %negative_prompt%,
+                  %reference_image%, %text_encoder%, and %vae%.
                 </span>
               </label>
             ) : null}
@@ -5050,10 +5069,16 @@ function ImageGenerationSettings({
   );
   const selectProvider = (provider: string) => {
     const nextProvider = settings.image_generation.providers.find((row) => row.name === provider);
+    const model = nextProvider?.default_model || nextProvider?.models?.[0] || form.model;
+    const samplerDefaults = comfySamplerDefaults(model);
     onChangeForm((prev) => ({
       ...prev,
       provider,
-      model: nextProvider?.default_model || nextProvider?.models?.[0] || prev.model,
+      model,
+      ...(provider === "comfyui" ? {
+        defaultSteps: samplerDefaults.steps,
+        defaultCfgScale: samplerDefaults.cfgScale,
+      } : {}),
     }));
   };
 
@@ -5125,7 +5150,17 @@ function ImageGenerationSettings({
                 "settings.image.typeModelId",
                 "Type the model ID supported by this provider.",
               )}
-              onChange={(model) => onChangeForm((prev) => ({ ...prev, model }))}
+              onChange={(model) => onChangeForm((prev) => {
+                const samplerDefaults = comfySamplerDefaults(model);
+                return {
+                  ...prev,
+                  model,
+                  ...(prev.provider === "comfyui" ? {
+                    defaultSteps: samplerDefaults.steps,
+                    defaultCfgScale: samplerDefaults.cfgScale,
+                  } : {}),
+                };
+              })}
             />
           </SettingsRow>
           <SettingsRow title={tx("settings.rows.defaultAspectRatio", "Default aspect")}>
@@ -5148,6 +5183,33 @@ function ImageGenerationSettings({
               }
             />
           </SettingsRow>
+          {form.provider === "comfyui" ? (
+            <>
+              <SettingsRow title={tx("settings.rows.imageSteps", "Steps")}>
+                <NumberInput
+                  value={form.defaultSteps}
+                  min={1}
+                  max={150}
+                  ariaLabel={tx("settings.rows.imageSteps", "Steps")}
+                  onChange={(defaultSteps) =>
+                    onChangeForm((prev) => ({ ...prev, defaultSteps }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow title={tx("settings.rows.imageCfgScale", "CFG scale")}>
+                <NumberInput
+                  value={form.defaultCfgScale}
+                  min={0}
+                  max={30}
+                  step={0.1}
+                  ariaLabel={tx("settings.rows.imageCfgScale", "CFG scale")}
+                  onChange={(defaultCfgScale) =>
+                    onChangeForm((prev) => ({ ...prev, defaultCfgScale }))
+                  }
+                />
+              </SettingsRow>
+            </>
+          ) : null}
           <SettingsRow title={tx("settings.rows.maxImagesPerTurn", "Max images per turn")}>
             <NumberInput
               value={form.maxImagesPerTurn}
@@ -9863,12 +9925,16 @@ function NumberInput({
   value,
   min,
   max,
+  step,
+  ariaLabel,
   onChange,
   suffix,
 }: {
   value: number;
   min: number;
   max: number;
+  step?: number;
+  ariaLabel?: string;
   onChange: (value: number) => void;
   suffix?: string;
 }) {
@@ -9878,6 +9944,8 @@ function NumberInput({
         type="number"
         min={min}
         max={max}
+        step={step}
+        aria-label={ariaLabel}
         value={value}
         onChange={(event) => {
           const parsed = Number(event.target.value);

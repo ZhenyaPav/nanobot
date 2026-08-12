@@ -29,6 +29,7 @@ from nanobot.webui.settings_api import (
     settings_usage_payload,
     update_agent_settings,
     update_api_settings,
+    update_image_generation_settings,
     update_model_call_order,
     update_model_configuration,
     update_network_safety_settings,
@@ -1811,11 +1812,15 @@ def test_provider_models_payload_fetches_comfyui_checkpoints(
     monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
     def fake_get(url: str, **kwargs):
-        assert url == "http://comfy.test:8188/models/checkpoints"
         assert kwargs["headers"]["Authorization"].startswith("Basic ")
+        models = (
+            ["anima-turbo-v1.0.safetensors"]
+            if url.endswith("/models/diffusion_models")
+            else ["models/anime.safetensors", "models/realism.safetensors"]
+        )
         return httpx.Response(
             200,
-            json=["models/anime.safetensors", "models/realism.safetensors"],
+            json=models,
             request=httpx.Request("GET", url),
         )
 
@@ -1826,9 +1831,58 @@ def test_provider_models_payload_fetches_comfyui_checkpoints(
     assert payload["status"] == "available"
     assert payload["catalog_kind"] == "local"
     assert [model["id"] for model in payload["models"]] == [
+        "anima-turbo-v1.0.safetensors",
         "models/anime.safetensors",
         "models/realism.safetensors",
     ]
+
+
+def test_update_image_generation_settings_saves_comfyui_steps_and_cfg(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.providers.comfyui.api_base = "http://comfy.test:8188"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_image_generation_settings(
+        {
+            "provider": ["comfyui"],
+            "model": ["anima-turbo-v1.0.safetensors"],
+            "default_steps": ["10"],
+            "default_cfg_scale": ["1.25"],
+        }
+    )
+
+    saved = load_config(config_path)
+    assert saved.tools.image_generation.default_steps == 10
+    assert saved.tools.image_generation.default_cfg_scale == 1.25
+    assert payload["image_generation"]["default_steps"] == 10
+    assert payload["image_generation"]["default_cfg_scale"] == 1.25
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("default_steps", "0", "between 1 and 150"),
+        ("default_cfg_scale", "31", "between 0 and 30"),
+    ],
+)
+def test_update_image_generation_settings_validates_sampler_defaults(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    with pytest.raises(WebUISettingsError, match=message):
+        update_image_generation_settings({field: [value]})
 
 
 def test_provider_models_payload_returns_curated_openai_codex_models() -> None:

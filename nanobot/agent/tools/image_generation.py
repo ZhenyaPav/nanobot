@@ -53,6 +53,8 @@ class ImageGenerationToolConfig(Base):
     model: str = "openai/gpt-5.4-image-2"
     default_aspect_ratio: str = "1:1"
     default_image_size: str = "1K"
+    default_steps: int | None = Field(default=None, ge=1, le=150)
+    default_cfg_scale: float | None = Field(default=None, ge=0, le=30)
     max_images_per_turn: int = Field(default=4, ge=1, le=8)
     save_dir: str = "generated"
 
@@ -137,13 +139,22 @@ class ImageGenerationTool(Tool):
         cls = get_image_gen_provider(self.config.provider)
         if cls is None:
             return None
+        extra_body = (
+            dict(provider.extra_body)
+            if provider and isinstance(provider.extra_body, dict)
+            else {}
+        )
+        if self.config.provider == "comfyui":
+            if self.config.default_steps is not None:
+                extra_body["steps"] = self.config.default_steps
+            if self.config.default_cfg_scale is not None:
+                extra_body["cfg"] = self.config.default_cfg_scale
         kwargs: dict[str, Any] = {
             "api_key": provider.api_key if provider and isinstance(provider.api_key, str) else None,
             "api_base": provider.api_base if provider and isinstance(provider.api_base, str) else None,
             "extra_headers": provider.extra_headers
             if provider and isinstance(provider.extra_headers, dict) else None,
-            "extra_body": provider.extra_body
-            if provider and isinstance(provider.extra_body, dict) else None,
+            "extra_body": extra_body or None,
             "proxy": provider.proxy if provider and isinstance(provider.proxy, str) else None,
         }
         return cls(**kwargs)

@@ -291,6 +291,31 @@ class FakeComfyClient:
         return FakeResponse({}, content=PNG_BYTES)
 
 
+class FakeComfyErrorClient(FakeComfyClient):
+    async def get(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": "GET", "url": url, **kwargs})
+        return FakeResponse(
+            {
+                "prompt-1": {
+                    "status": {
+                        "status_str": "error",
+                        "messages": [
+                            [
+                                "execution_error",
+                                {
+                                    "node_id": "4",
+                                    "node_type": "UNETLoader",
+                                    "exception_message": "model is not in the model list",
+                                },
+                            ]
+                        ],
+                    },
+                    "outputs": {},
+                }
+            }
+        )
+
+
 @pytest.mark.asyncio
 async def test_comfyui_submits_workflow_and_downloads_output() -> None:
     fake = FakeComfyClient()
@@ -316,7 +341,79 @@ async def test_comfyui_submits_workflow_and_downloads_output() -> None:
     assert workflow["4"]["inputs"]["ckpt_name"] == "forest.safetensors"
     assert workflow["6"]["inputs"]["text"] == "a quiet forest"
     assert workflow["7"]["inputs"]["text"] == "watermark"
+    assert workflow["3"]["inputs"]["steps"] == 20
+    assert workflow["3"]["inputs"]["cfg"] == 7.0
     assert any(call["url"] == "http://127.0.0.1:8188/view" for call in fake.calls)
+
+
+@pytest.mark.asyncio
+async def test_comfyui_uses_anima_split_workflow_and_turbo_defaults() -> None:
+    fake = FakeComfyClient()
+    client = ComfyUIImageGenerationClient(
+        api_key=None,
+        api_base="http://127.0.0.1:8188",
+        client=fake,  # type: ignore[arg-type]
+    )
+
+    await client.generate(
+        prompt="masterpiece, safe, 1girl",
+        model="ANIMA/anima_turboV10.safetensors",
+        aspect_ratio="1:1",
+        image_size="1K",
+    )
+
+    workflow = fake.calls[0]["json"]["prompt"]
+    assert workflow["4"] == {
+        "class_type": "UNETLoader",
+        "inputs": {
+            "unet_name": "anima_turboV10.safetensors",
+            "weight_dtype": "default",
+        },
+    }
+    assert workflow["10"]["inputs"]["clip_name"] == "qwen_3_06b_base.safetensors"
+    assert workflow["11"]["inputs"]["vae_name"] == "qwen_image_vae.safetensors"
+    assert workflow["3"]["inputs"]["steps"] == 10
+    assert workflow["3"]["inputs"]["cfg"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_comfyui_custom_workflow_replaces_steps_and_cfg() -> None:
+    fake = FakeComfyClient()
+    client = ComfyUIImageGenerationClient(
+        api_key=None,
+        api_base="http://127.0.0.1:8188",
+        extra_body={
+            "steps": 8,
+            "cfg": 1.25,
+            "workflow": {
+                "1": {
+                    "class_type": "CustomSampler",
+                    "inputs": {"steps": "%steps%", "cfg": "%cfg_scale%"},
+                }
+            },
+        },
+        client=fake,  # type: ignore[arg-type]
+    )
+
+    await client.generate(prompt="draw", model="custom.safetensors")
+
+    workflow = fake.calls[0]["json"]["prompt"]
+    assert workflow["1"]["inputs"] == {"steps": 8, "cfg": 1.25}
+
+
+@pytest.mark.asyncio
+async def test_comfyui_reports_execution_error_details() -> None:
+    client = ComfyUIImageGenerationClient(
+        api_key=None,
+        api_base="http://127.0.0.1:8188",
+        client=FakeComfyErrorClient(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(
+        ImageGenerationError,
+        match=r"UNETLoader.*model is not in the model list",
+    ):
+        await client.generate(prompt="draw", model="missing.safetensors")
 
 
 @pytest.mark.asyncio

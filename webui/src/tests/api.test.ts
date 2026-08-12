@@ -745,11 +745,13 @@ describe("webui API helpers", () => {
       model: "openai/gpt-5.4-image-2",
       defaultAspectRatio: "16:9",
       defaultImageSize: "2K",
+      defaultSteps: 10,
+      defaultCfgScale: 1,
       maxImagesPerTurn: 3,
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/image-generation/update?enabled=true&provider=openrouter&model=openai%2Fgpt-5.4-image-2&default_aspect_ratio=16%3A9&default_image_size=2K&max_images_per_turn=3",
+      "/api/settings/image-generation/update?enabled=true&provider=openrouter&model=openai%2Fgpt-5.4-image-2&default_aspect_ratio=16%3A9&default_image_size=2K&default_steps=10&default_cfg_scale=1&max_images_per_turn=3",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),

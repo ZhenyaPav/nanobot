@@ -82,6 +82,8 @@ function settingsPayload(): SettingsPayload {
       model: "openai/gpt-5.4-image-2",
       default_aspect_ratio: "1:1",
       default_image_size: "1K",
+      default_steps: null,
+      default_cfg_scale: null,
       max_images_per_turn: 4,
       save_dir: "generated",
       providers: [],
@@ -3616,6 +3618,31 @@ describe("SettingsView Apps catalog", () => {
       "/api/settings/provider-models?provider=comfyui",
       expect.objectContaining({ headers: { Authorization: "Bearer tok" } }),
     );
+  });
+
+  it("shows Anima Turbo sampler defaults for ComfyUI", async () => {
+    const base = settingsPayload();
+    const payload: SettingsPayload = {
+      ...base,
+      image_generation: {
+        ...base.image_generation,
+        provider: "comfyui",
+        provider_configured: true,
+        model: "ANIMA/anima_turboV10.safetensors",
+        providers: [{
+          name: "comfyui",
+          label: "ComfyUI",
+          configured: true,
+          models: ["ANIMA/anima_turboV10.safetensors"],
+          default_model: "ANIMA/anima_turboV10.safetensors",
+        }],
+      },
+    };
+
+    renderSettingsView({ initialSection: "image", initialSettings: payload });
+
+    expect(screen.getByRole("spinbutton", { name: "Steps" })).toHaveValue(10);
+    expect(screen.getByRole("spinbutton", { name: "CFG scale" })).toHaveValue(1);
   });
 
   it("saves a dedicated ComfyUI workflow without overwriting image options", async () => {

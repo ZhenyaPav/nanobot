@@ -770,7 +770,7 @@ def _comfyui_models_payload(
     spec: Any,
     provider_config: ProviderConfig,
 ) -> dict[str, Any]:
-    """Fetch ComfyUI checkpoint names for the Image Generation settings picker."""
+    """Fetch ComfyUI checkpoint and diffusion-model names for the image picker."""
     base_payload: dict[str, Any] = {
         "provider": provider_key,
         "label": spec.label,
@@ -785,7 +785,7 @@ def _comfyui_models_payload(
         return {
             **base_payload,
             "status": "missing_api_base",
-            "message": "Configure a ComfyUI API base URL to load checkpoints.",
+            "message": "Configure a ComfyUI API base URL to load image models.",
         }
 
     headers = {"Accept": "application/json"}
@@ -793,34 +793,43 @@ def _comfyui_models_payload(
     if api_key:
         encoded = base64.b64encode(api_key.encode("utf-8")).decode("ascii")
         headers["Authorization"] = f"Basic {encoded}"
-    models_url = f"{api_base.rstrip('/')}/models/checkpoints"
-    try:
-        response = httpx.get(
-            models_url,
-            headers=headers,
-            timeout=10.0,
-            follow_redirects=False,
-        )
-        response.raise_for_status()
-        rows = _extract_model_rows(response.json())
-    except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code
-        if status in {401, 403}:
-            return {
-                **base_payload,
-                "status": "not_configured",
-                "message": "ComfyUI rejected the configured credential.",
-            }
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    errors: list[str] = []
+    for model_type in ("diffusion_models", "checkpoints"):
+        models_url = f"{api_base.rstrip('/')}/models/{model_type}"
+        try:
+            response = httpx.get(
+                models_url,
+                headers=headers,
+                timeout=10.0,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            fetched_rows = _extract_model_rows(response.json())
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {401, 403}:
+                return {
+                    **base_payload,
+                    "status": "not_configured",
+                    "message": "ComfyUI rejected the configured credential.",
+                }
+            errors.append(f"{model_type}: HTTP {status}")
+            continue
+        except (httpx.HTTPError, ValueError) as exc:
+            errors.append(f"{model_type}: {exc}")
+            continue
+        for row in fetched_rows:
+            model_id = str(row["id"])
+            if model_id not in seen:
+                seen.add(model_id)
+                rows.append(row)
+    if not rows and errors:
         return {
             **base_payload,
             "status": "error",
-            "message": f"ComfyUI checkpoint request failed with HTTP {status}.",
-        }
-    except (httpx.HTTPError, ValueError) as exc:
-        return {
-            **base_payload,
-            "status": "error",
-            "message": f"Could not load ComfyUI checkpoints: {exc}",
+            "message": f"Could not load ComfyUI image models: {'; '.join(errors)}",
         }
     return {
         **base_payload,
@@ -1356,6 +1365,8 @@ def settings_payload(
             "model": image_config.model,
             "default_aspect_ratio": image_config.default_aspect_ratio,
             "default_image_size": image_config.default_image_size,
+            "default_steps": image_config.default_steps,
+            "default_cfg_scale": image_config.default_cfg_scale,
             "max_images_per_turn": image_config.max_images_per_turn,
             "save_dir": image_config.save_dir,
             "providers": image_providers,
@@ -2312,6 +2323,34 @@ def update_image_generation_settings(query: QueryParams) -> dict[str, Any]:
             raise WebUISettingsError("unsupported image generation size")
         if image_config.default_image_size != default_image_size:
             image_config.default_image_size = default_image_size
+            changed = True
+
+    default_steps = _query_first_alias(query, "default_steps", "defaultSteps")
+    if default_steps is not None:
+        try:
+            parsed_steps = int(default_steps)
+        except ValueError:
+            raise WebUISettingsError("default_steps must be an integer") from None
+        if parsed_steps < 1 or parsed_steps > 150:
+            raise WebUISettingsError("default_steps must be between 1 and 150")
+        if image_config.default_steps != parsed_steps:
+            image_config.default_steps = parsed_steps
+            changed = True
+
+    default_cfg_scale = _query_first_alias(
+        query,
+        "default_cfg_scale",
+        "defaultCfgScale",
+    )
+    if default_cfg_scale is not None:
+        try:
+            parsed_cfg = float(default_cfg_scale)
+        except ValueError:
+            raise WebUISettingsError("default_cfg_scale must be a number") from None
+        if not math.isfinite(parsed_cfg) or parsed_cfg < 0 or parsed_cfg > 30:
+            raise WebUISettingsError("default_cfg_scale must be between 0 and 30")
+        if image_config.default_cfg_scale != parsed_cfg:
+            image_config.default_cfg_scale = parsed_cfg
             changed = True
 
     max_images_per_turn = _query_first_alias(
